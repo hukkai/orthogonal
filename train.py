@@ -41,6 +41,7 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--epochs", type=int, default=300)
     parser.add_argument("--batch-size", type=int, default=1024, help="Global batch size")
+    parser.add_argument("--grad-accum-steps", type=int, default=1, help="Gradient accumulation steps")
     parser.add_argument("--lr", type=float, default=None, help="Override base LR")
     parser.add_argument("--base-lr", type=float, default=5e-4)
     parser.add_argument("--min-lr", type=float, default=1e-6)
@@ -122,6 +123,19 @@ def create_optimizer(args: argparse.Namespace, model: torch.nn.Module) -> torch.
     return optimizer
 
 
+def gradient_accumulation_state(
+    batch_idx: int,
+    total_batches: int,
+    accum_steps: int,
+) -> tuple[int, bool]:
+    remainder = total_batches % accum_steps
+    last_window = remainder if remainder != 0 else accum_steps
+    in_last_window = batch_idx >= total_batches - last_window
+    current_accum_steps = last_window if in_last_window else accum_steps
+    should_step = (batch_idx + 1) % accum_steps == 0 or batch_idx == total_batches - 1
+    return current_accum_steps, should_step
+
+
 def train_one_epoch(
     args: argparse.Namespace,
     model: torch.nn.Module,
@@ -142,12 +156,13 @@ def train_one_epoch(
     model.train()
     loss_meter = AverageMeter("loss")
     acc_meter = AverageMeter("acc1")
+    num_batches = len(loader)
+    update_idx = 0
+    last_lr = optimizer.param_groups[0]["lr"]
+    optimizer.zero_grad(set_to_none=True)
 
     for i, (images, targets) in enumerate(loader):
-        step = epoch * steps_per_epoch + i
-        lr = cosine_lr(step, total_steps, warmup_steps, base_lr, min_lr)
-        for pg in optimizer.param_groups:
-            pg["lr"] = lr
+        accum_steps, should_step = gradient_accumulation_state(i, num_batches, args.grad_accum_steps)
 
         images = images.to(device, non_blocking=True)
         targets = targets.to(device, non_blocking=True)
@@ -161,40 +176,51 @@ def train_one_epoch(
             else nullcontext()
         )
 
-        with autocast_ctx:
-            outputs = model(images)
-            loss = criterion(outputs, targets)
+        sync_ctx = model.no_sync() if isinstance(model, DDP) and not should_step else nullcontext()
+        with sync_ctx:
+            with autocast_ctx:
+                outputs = model(images)
+                loss = criterion(outputs, targets)
+            (loss / accum_steps).backward()
 
-        loss.backward()
+        if should_step:
+            step = epoch * steps_per_epoch + update_idx
+            lr = cosine_lr(step, total_steps, warmup_steps, base_lr, min_lr)
+            for pg in optimizer.param_groups:
+                pg["lr"] = lr
 
-        if args.clip_grad and args.clip_grad > 0:
-            torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip_grad)
+            if args.clip_grad and args.clip_grad > 0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip_grad)
 
-        is_last = i == len(loader) - 1
-        if orth_opt is not None:
-            orth_opt.step(lr=lr, is_last=is_last)
+            is_last = i == num_batches - 1
+            if orth_opt is not None:
+                orth_opt.step(lr=lr, is_last=is_last)
 
-        optimizer.step()
-        optimizer.zero_grad(set_to_none=True)
+            optimizer.step()
+            optimizer.zero_grad(set_to_none=True)
 
-        if ema_model is not None:
-            ema_model.update(model.module if hasattr(model, "module") else model)
+            if ema_model is not None:
+                ema_model.update(model.module if hasattr(model, "module") else model)
+            last_lr = lr
+            update_idx += 1
 
         loss_meter.update(loss.item(), images.size(0))
         if mixup_fn is None:
             acc1 = accuracy(outputs, targets, topk=(1,))[0]
             acc_meter.update(acc1.item(), images.size(0))
 
-        if is_main_process() and (i % args.log_interval == 0 or i == len(loader) - 1):
+        if is_main_process() and (i % args.log_interval == 0 or i == num_batches - 1):
             if mixup_fn is None:
                 print(
-                    f"Epoch [{epoch}] Step [{i}/{len(loader)}] "
-                    f"LR {lr:.6f} Loss {loss_meter.avg:.4f} Acc@1 {acc_meter.avg:.2f}"
+                    f"Epoch [{epoch}] Step [{i}/{num_batches}] "
+                    f"Update [{update_idx}/{steps_per_epoch}] "
+                    f"LR {last_lr:.6f} Loss {loss_meter.avg:.4f} Acc@1 {acc_meter.avg:.2f}"
                 )
             else:
                 print(
-                    f"Epoch [{epoch}] Step [{i}/{len(loader)}] "
-                    f"LR {lr:.6f} Loss {loss_meter.avg:.4f}"
+                    f"Epoch [{epoch}] Step [{i}/{num_batches}] "
+                    f"Update [{update_idx}/{steps_per_epoch}] "
+                    f"LR {last_lr:.6f} Loss {loss_meter.avg:.4f}"
                 )
 
     if orth_opt is not None:
@@ -243,6 +269,8 @@ def evaluate(
 
 def main() -> None:
     args = parse_args()
+    if args.grad_accum_steps < 1:
+        raise ValueError("--grad-accum-steps must be >= 1")
     distributed, local_rank, rank, world_size = init_distributed()
     device = torch.device("cuda", local_rank) if torch.cuda.is_available() else torch.device("cpu")
 
@@ -290,7 +318,7 @@ def main() -> None:
 
     optimizer = create_optimizer(args, model)
 
-    steps_per_epoch = len(train_loader)
+    steps_per_epoch = (len(train_loader) + args.grad_accum_steps - 1) // args.grad_accum_steps
     total_steps = steps_per_epoch * args.epochs
     warmup_steps = steps_per_epoch * args.warmup_epochs
 
