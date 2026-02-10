@@ -108,7 +108,7 @@ def build_model(args: argparse.Namespace) -> torch.nn.Module:
         embed_dim=args.embed_dim,
         depth=args.depth,
         num_heads=args.num_heads,
-        init_values=args.depth**-.5
+        init_values=1e-4
     )
     return model
 
