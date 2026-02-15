@@ -34,9 +34,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--patch-size", type=int, default=16)
     parser.add_argument("--num-classes", type=int, default=1000)
 
-    parser.add_argument("--embed-dim", type=int, default=768)
-    parser.add_argument("--depth", type=int, default=16)
-    parser.add_argument("--num-heads", type=int, default=12)
+    parser.add_argument("--embed-dim", type=int, default=1024)
+    parser.add_argument("--depth", type=int, default=24)
+    parser.add_argument("--num-heads", type=int, default=16)
     parser.add_argument("--mlp-ratio", type=float, default=4.0)
 
     parser.add_argument("--epochs", type=int, default=300)
@@ -45,17 +45,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--base-lr", type=float, default=5e-4)
     parser.add_argument("--min-lr", type=float, default=1e-6)
     parser.add_argument("--warmup-epochs", type=int, default=5)
-    parser.add_argument("--weight-decay", type=float, default=0.05)
+    parser.add_argument("--weight-decay", type=float, default=0.1)
     parser.add_argument("--clip-grad", type=float, default=1.0)
 
     parser.add_argument("--drop", type=float, default=0.0)
     parser.add_argument("--attn-drop", type=float, default=0.0)
-    parser.add_argument("--drop-path", type=float, default=0.1)
+    parser.add_argument("--drop-path", type=float, default=0.2)
 
     parser.add_argument("--label-smoothing", type=float, default=0.1)
-    parser.add_argument("--mixup", type=float, default=0.2)
+    parser.add_argument("--mixup", type=float, default=0.8)
     parser.add_argument("--cutmix", type=float, default=1.0)
-    parser.add_argument("--mixup-prob", type=float, default=1.0)
+    parser.add_argument("--mixup-prob", type=float, default=0.8)
     parser.add_argument("--mixup-switch-prob", type=float, default=0.5)
     parser.add_argument("--mixup-mode", type=str, default="batch")
 
@@ -75,7 +75,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--save-freq", type=int, default=1)
     parser.add_argument("--eval-only", action="store_true")
 
-    parser.add_argument("--orthogonal", action="store_true")
+    parser.add_argument("--orthogonal-type", type=str, default="none")
     parser.add_argument("--orth-beta1", type=float, default=0.9)
     parser.add_argument("--orth-beta2", type=float, default=0.999)
     parser.add_argument("--orth-eps", type=float, default=1e-8)
@@ -88,10 +88,12 @@ def parse_args() -> argparse.Namespace:
 
 
 def build_model(args: argparse.Namespace) -> torch.nn.Module:
-    if args.orthogonal:
-        from models import ChunkedVisionTransformer as vit_models
+    from models import rout_model
+
+    if args.orthogonal_type not in ["none", "mlp", "atten"]:
+        chunk_type = "all"
     else:
-        from models import VisionTransformer as vit_models
+        chunk_type = args.orthogonal_type
 
     common_kwargs = dict(
         img_size=args.img_size,
@@ -103,20 +105,19 @@ def build_model(args: argparse.Namespace) -> torch.nn.Module:
         drop_path_rate=args.drop_path
     )
 
-    model = vit_models(
+    model = rout_model(
         **common_kwargs,
         embed_dim=args.embed_dim,
         depth=args.depth,
         num_heads=args.num_heads,
-        init_values=1e-4
+        init_values=1e-4,
+        chunk_type=chunk_type,
     )
     return model
 
 
-
-
 def create_optimizer(args: argparse.Namespace, model: torch.nn.Module) -> torch.optim.Optimizer:
-    exclude = ["chunk_weights"] if args.orthogonal else []
+    exclude = ["chunk_weights"] if args.orthogonal_type != "none" else []
     param_groups = get_param_groups(model, args.weight_decay, exclude_names=exclude)
     optimizer = torch.optim.AdamW(param_groups, lr=args.lr, betas=(0.9, 0.999))
     return optimizer
@@ -295,7 +296,7 @@ def main() -> None:
     warmup_steps = steps_per_epoch * args.warmup_epochs
 
     orth_opt = None
-    if args.orthogonal:
+    if args.orthogonal_type != "none":
         module = model.module if hasattr(model, "module") else model
         orth_opt = SOOptimizer(
             module.chunk_weights,
