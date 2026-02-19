@@ -72,10 +72,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--log-interval", type=int, default=50)
     parser.add_argument("--output", type=str, default="./output")
     parser.add_argument("--resume", type=str, default="")
-    parser.add_argument("--save-freq", type=int, default=1)
+    parser.add_argument("--save-freq", type=int, default=999)
     parser.add_argument("--eval-only", action="store_true")
 
     parser.add_argument("--orthogonal-type", type=str, default="none")
+    parser.add_argument("--so-lr", type=float, default=0.5)
     parser.add_argument("--orth-beta1", type=float, default=0.9)
     parser.add_argument("--orth-beta2", type=float, default=0.999)
     parser.add_argument("--orth-eps", type=float, default=1e-8)
@@ -173,7 +174,7 @@ def train_one_epoch(
 
         is_last = i == len(loader) - 1
         if orth_opt is not None:
-            orth_opt.step(lr=lr, is_last=is_last)
+            orth_opt.step(lr=lr * args.so_lr, is_last=is_last)
 
         optimizer.step()
         optimizer.zero_grad(set_to_none=True)
@@ -300,7 +301,7 @@ def main() -> None:
         module = model.module if hasattr(model, "module") else model
         orth_opt = SOOptimizer(
             module.chunk_weights,
-            lr=args.lr,
+            lr=args.lr * args.so_lr,
             betas=(args.orth_beta1, args.orth_beta2),
             eps=args.orth_eps,
             project_last=args.orth_project_last,
