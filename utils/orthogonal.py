@@ -36,8 +36,9 @@ class SOOptimizer:
         self.local_slice = slice(self.rank * per_rank, (self.rank + 1) * per_rank)
 
         self.m = torch.zeros_like(param.data[self.local_slice])
-        self.v = torch.ones_like(self.m) / (param.shape[-1] ** 2)
+        self.v = torch.zeros_like(self.m)
         self.buffer = torch.zeros_like(param.data)
+        self.step_count = torch.tensor(0.0, device=self.m.device)
 
     def state_dict(self) -> dict:
         return {
@@ -64,16 +65,20 @@ class SOOptimizer:
             return
         lr = lr if lr is not None else self.lr
 
+        self.step_count += 1
+
         x = self.param.data[self.local_slice]
         grad = self.param.grad[self.local_slice]
 
         grad = so_proj(x, grad)
-        grad = grad / grad.norm(dim=(1, 2), keepdim=True).clamp(min=1e-8)
 
         self.m += (grad - self.m) * (1.0 - self.beta1)
         self.v += (grad.pow(2) - self.v) * (1.0 - self.beta2)
 
-        update = -self.m / (self.v.sqrt() + self.eps) * lr
+        m_hat = self.m / (1.0 - self.beta1**self.step_count)
+        v_hat = self.v / (1.0 - self.beta2**self.step_count)
+
+        update = -m_hat / (v_hat.sqrt() + self.eps) * lr
         update = fast_exp(update.double())
         new_x = (x.double() @ update).to(x.dtype)
 
