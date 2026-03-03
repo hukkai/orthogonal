@@ -60,7 +60,7 @@ class SOOptimizer:
         self.eps = state.get("eps", self.eps)
         self.project_last = state.get("project_last", self.project_last)
 
-    def step(self, lr: float | None = None, is_last: bool = False) -> None:
+    def step(self, lr: float | torch.Tensor | None = None, is_last: bool = False) -> None:
         if self.param.grad is None:
             return
         lr = lr if lr is not None else self.lr
@@ -78,7 +78,23 @@ class SOOptimizer:
         m_hat = self.m / (1.0 - self.beta1**self.step_count)
         v_hat = self.v / (1.0 - self.beta2**self.step_count)
 
-        update = -m_hat / (v_hat.sqrt() + self.eps) * lr
+        if isinstance(lr, torch.Tensor):
+            if lr.ndim == 0:
+                lr_scale = lr.to(device=x.device, dtype=x.dtype)
+            else:
+                if lr.ndim != 1:
+                    raise ValueError("lr tensor must be a scalar or 1-D")
+                if lr.numel() == self.param.shape[0]:
+                    lr_local = lr[self.local_slice]
+                elif lr.numel() == x.shape[0]:
+                    lr_local = lr
+                else:
+                    raise ValueError("1-D lr tensor must match global or local chunk rows")
+                lr_scale = lr_local.to(device=x.device, dtype=x.dtype).reshape(-1, 1, 1)
+        else:
+            lr_scale = lr
+
+        update = -m_hat / (v_hat.sqrt() + self.eps) * lr_scale
         update = fast_exp(update.double())
         new_x = (x.double() @ update).to(x.dtype)
 
