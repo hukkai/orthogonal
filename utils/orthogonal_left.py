@@ -7,13 +7,14 @@ from .ops import fast_exp, polar
 
 
 @torch.no_grad()
-def so_proj(x: torch.Tensor, grad: torch.Tensor) -> torch.Tensor:
-    proj_grad = x.mT @ grad
+def so_proj_left(x: torch.Tensor, grad: torch.Tensor) -> torch.Tensor:
+    # Left-trivialized Lie algebra gradient for updates of the form exp(A) @ x.
+    proj_grad = grad @ x.mT
     proj_grad = 0.5 * (proj_grad - proj_grad.mT)
     return proj_grad
 
 
-class SOOptimizer:
+class LeftSOOptimizer:
     def __init__(
         self,
         param: torch.nn.Parameter,
@@ -77,7 +78,7 @@ class SOOptimizer:
         x = self.param.data[self.local_slice]
         grad = self.param.grad[self.local_slice]
 
-        grad = so_proj(x, grad)
+        grad = so_proj_left(x, grad)
 
         self.m += (grad - self.m) * (1.0 - self.beta1)
         self.v += (grad.pow(2) - self.v) * (1.0 - self.beta2)
@@ -87,7 +88,7 @@ class SOOptimizer:
 
         update = -m_hat / (v_hat.sqrt() + self.eps) * lr
         update = fast_exp(update.double())
-        new_x = (x.double() @ update).to(x.dtype)
+        new_x = (update @ x.double()).to(x.dtype)
 
         if is_last and self.project_last:
             new_x = polar(new_x)

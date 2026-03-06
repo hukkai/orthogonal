@@ -24,7 +24,7 @@ class ChunkedAttention(nn.Module):
         self.scale = self.head_dim ** -0.5
 
         self.qkv_bias = nn.Parameter(torch.zeros(dim * 3)) if qkv_bias else None
-        self.proj_bias = nn.Parameter(torch.zeros(dim)) if qkv_bias else None
+        self.proj_bias = nn.Parameter(torch.zeros(dim))
         self.attn_drop = nn.Dropout(attn_drop)
         self.proj_drop = nn.Dropout(proj_drop)
 
@@ -57,7 +57,7 @@ class ChunkedMlp(nn.Module):
         self,
         dim: int,
         mlp_ratio: float = 4.0,
-        bias: bool = False,
+        bias: bool = True,
         drop: float = 0.0,
         act_layer: nn.Module = nn.GELU,
     ) -> None:
@@ -110,7 +110,7 @@ class ChunkedBlock(nn.Module):
         )
         self.drop_path = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
         self.norm2 = norm_layer(dim)
-        self.mlp = ChunkedMlp(dim, mlp_ratio=mlp_ratio, bias=qkv_bias, drop=drop, act_layer=act_layer)
+        self.mlp = ChunkedMlp(dim, mlp_ratio=mlp_ratio, bias=True, drop=drop, act_layer=act_layer)
         if init_values is not None and init_values > 0:
             self.gamma_1 = nn.Parameter(init_values * torch.ones(dim))
             self.gamma_2 = nn.Parameter(init_values * torch.ones(dim))
