@@ -24,8 +24,6 @@ class ChunkedBlock(nn.Module):
         init_values: Optional[float] = None,
     ) -> None:
         super().__init__()
-        if int(mlp_ratio) != mlp_ratio:
-            raise ValueError("mlp_ratio must be an integer for chunked MLP")
         self.norm1 = norm_layer(dim)
         self.attn = ChunkedAttention(
             dim,

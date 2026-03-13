@@ -34,7 +34,7 @@ class ChunkedBlock(nn.Module):
         )
         self.drop_path = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
         self.norm2 = norm_layer(dim)
-        self.mlp = ChunkedMlp(dim, mlp_ratio=mlp_ratio, bias=qkv_bias, drop=drop, act_layer=act_layer)
+        self.mlp = ChunkedMlp(dim, mlp_ratio=mlp_ratio, bias=True, drop=drop, act_layer=act_layer)
         if init_values is not None and init_values > 0:
             self.gamma_1 = nn.Parameter(init_values * torch.ones(dim))
             self.gamma_2 = nn.Parameter(init_values * torch.ones(dim))

@@ -51,14 +51,7 @@ def polar(a: torch.Tensor, eps: float = 1e-10) -> torch.Tensor:
         ata_inv_sqrt = (eigvecs / sqrt_eigvals) @ eigvecs.mT
         u = aa @ ata_inv_sqrt
         return u.to(a.dtype)
-    except Exception:
+    except torch.linalg.LinAlgError:
         u, _, vt = torch.linalg.svd(aa)
         q = u @ vt
         return q.to(a.dtype)
-
-
-@torch.no_grad()
-def so_proj(x: torch.Tensor, grad: torch.Tensor) -> torch.Tensor:
-    proj_grad = x.mT @ grad
-    proj_grad = 0.5 * (proj_grad - proj_grad.mT)
-    return proj_grad
