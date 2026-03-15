@@ -43,15 +43,15 @@ class ChunkedBlock(nn.Module):
             self.gamma_2 = None
 
     def forward(self, x: torch.Tensor, weights: torch.Tensor) -> torch.Tensor:
-        w1_rcc, w2_rcc = torch.split(
-            weights, [self.mlp.r, self.mlp.r], dim=0
-        )
+        w1_rcc, w2_rcc, proj_rcc = torch.split(weights, [self.mlp.r, self.mlp.r, self.mlp.r], dim=0)
         if self.gamma_1 is None:
             x = x + self.drop_path(self.attn(self.norm1(x)))
-            x = x + self.drop_path(self.mlp(self.norm2(x), w1_rcc, w2_rcc))
+            x = x + self.drop_path(self.mlp(self.norm2(x), w1_rcc, w2_rcc, proj_rcc))
         else:
             x = x + self.drop_path(self.gamma_1 * self.attn(self.norm1(x)))
-            x = x + self.drop_path(self.gamma_2 * self.mlp(self.norm2(x), w1_rcc, w2_rcc))
+            x = x + self.drop_path(
+                self.gamma_2 * self.mlp(self.norm2(x), w1_rcc, w2_rcc, proj_rcc)
+            )
         return x
 
 
@@ -73,7 +73,7 @@ class ChunkedMlpVisionTransformer(ChunkedVisionTransformerBase):
         norm_layer: nn.Module = nn.LayerNorm,
         init_values: Optional[float] = None,
     ) -> None:
-        num_matrix = 2 * int(mlp_ratio)
+        num_matrix = 3 * int(mlp_ratio)
         super().__init__(
             block_cls=ChunkedBlock,
             num_matrix=num_matrix,

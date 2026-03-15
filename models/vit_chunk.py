@@ -68,19 +68,26 @@ class ChunkedMlp(nn.Module):
             raise ValueError("mlp_ratio must be an integer for chunked MLP")
         self.hidden_dim = dim * self.r
         self.bias1 = nn.Parameter(torch.zeros(self.hidden_dim)) if bias else None
-        self.bias2 = nn.Parameter(torch.zeros(dim)) if bias else None
+        self.bias2 = nn.Parameter(torch.zeros(self.hidden_dim)) if bias else None
+        self.bias_proj = nn.Parameter(torch.zeros(dim)) if bias else None
         self.act = act_layer()
         self.drop = nn.Dropout(drop)
 
-    def forward(self, x: torch.Tensor, w1_rcc: torch.Tensor, w2_rcc: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        x: torch.Tensor,
+        w1_rcc: torch.Tensor,
+        w2_rcc: torch.Tensor,
+        proj_rcc: torch.Tensor,
+    ) -> torch.Tensor:
         B, N, C = x.shape
         w1 = w1_rcc.reshape(self.r * C, C)
-        w2 = w2_rcc.permute(1, 0, 2).reshape(C, self.r * C)
+        w2 = w2_rcc.reshape(self.r * C, C)
+        proj = proj_rcc.permute(1, 0, 2).reshape(C, self.r * C)
 
-        x = F.linear(x, w1, bias=self.bias1)
-        x = self.act(x)
+        x = self.act(F.linear(x, w1, bias=self.bias1)) * F.linear(x, w2, bias=self.bias2)
         x = self.drop(x)
-        x = F.linear(x, w2, bias=self.bias2)
+        x = F.linear(x, proj, bias=self.bias_proj)
         x = self.drop(x)
         return x
 
@@ -119,15 +126,17 @@ class ChunkedBlock(nn.Module):
             self.gamma_2 = None
 
     def forward(self, x: torch.Tensor, weights: torch.Tensor) -> torch.Tensor:
-        qkv_3cc, proj_1cc, w1_rcc, w2_rcc = torch.split(
-            weights, [3, 1, self.mlp.r, self.mlp.r], dim=0
+        qkv_3cc, proj_1cc, w1_rcc, w2_rcc, proj_rcc = torch.split(
+            weights, [3, 1, self.mlp.r, self.mlp.r, self.mlp.r], dim=0
         )
         if self.gamma_1 is None:
             x = x + self.drop_path(self.attn(self.norm1(x), qkv_3cc, proj_1cc))
-            x = x + self.drop_path(self.mlp(self.norm2(x), w1_rcc, w2_rcc))
+            x = x + self.drop_path(self.mlp(self.norm2(x), w1_rcc, w2_rcc, proj_rcc))
         else:
             x = x + self.drop_path(self.gamma_1 * self.attn(self.norm1(x), qkv_3cc, proj_1cc))
-            x = x + self.drop_path(self.gamma_2 * self.mlp(self.norm2(x), w1_rcc, w2_rcc))
+            x = x + self.drop_path(
+                self.gamma_2 * self.mlp(self.norm2(x), w1_rcc, w2_rcc, proj_rcc)
+            )
         return x
 
 
@@ -149,7 +158,7 @@ class ChunkedVisionTransformer(ChunkedVisionTransformerBase):
         norm_layer: nn.Module = nn.LayerNorm,
         init_values: Optional[float] = None,
     ) -> None:
-        num_matrix = 4 + 2 * int(mlp_ratio)
+        num_matrix = 4 + 3 * int(mlp_ratio)
         super().__init__(
             block_cls=ChunkedBlock,
             num_matrix=num_matrix,
