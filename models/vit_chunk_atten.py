@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 
 from .layers import DropPath
-from .vit import Mlp
+from .vit import GatedMlp
 from .vit_chunk import ChunkedAttention
 from .vit_chunk_base import ChunkedVisionTransformerBase
 
@@ -24,8 +24,6 @@ class ChunkedBlock(nn.Module):
         init_values: Optional[float] = None,
     ) -> None:
         super().__init__()
-        if int(mlp_ratio) != mlp_ratio:
-            raise ValueError("mlp_ratio must be an integer for chunked MLP")
         self.norm1 = norm_layer(dim)
         self.attn = ChunkedAttention(
             dim,
@@ -36,9 +34,9 @@ class ChunkedBlock(nn.Module):
         )
         self.drop_path = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
         self.norm2 = norm_layer(dim)
-        self.mlp = Mlp(
+        self.mlp = GatedMlp(
             in_features=dim,
-            hidden_features=int(mlp_ratio) * dim,
+            hidden_features=int(dim * mlp_ratio),
             act_layer=act_layer,
             drop=drop,
         )

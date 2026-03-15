@@ -37,7 +37,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--embed-dim", type=int, default=1024)
     parser.add_argument("--depth", type=int, default=24)
     parser.add_argument("--num-heads", type=int, default=16)
-    parser.add_argument("--mlp-ratio", type=float, default=4.0)
+    parser.add_argument("--mlp-ratio", type=float, default=3.0)
 
     parser.add_argument("--epochs", type=int, default=300)
     parser.add_argument("--batch-size", type=int, default=1024, help="Global batch size")
