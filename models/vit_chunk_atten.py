@@ -49,13 +49,13 @@ class ChunkedBlock(nn.Module):
             self.gamma_1 = None
             self.gamma_2 = None
 
-    def forward(self, x: torch.Tensor, weights: torch.Tensor) -> torch.Tensor:
-        qkv_3cc, proj_1cc = torch.split(weights, [3, 1], dim=0)
+    def forward(self, x: torch.Tensor, weights: dict[str, torch.Tensor]) -> torch.Tensor:
+        qkv_weight = torch.cat((weights["q"], weights["k"], weights["v"]), dim=0)
         if self.gamma_1 is None:
-            x = x + self.drop_path(self.attn(self.norm1(x), qkv_3cc, proj_1cc))
+            x = x + self.drop_path(self.attn(self.norm1(x), qkv_weight, weights["proj"]))
             x = x + self.drop_path(self.mlp(self.norm2(x)))
         else:
-            x = x + self.drop_path(self.gamma_1 * self.attn(self.norm1(x), qkv_3cc, proj_1cc))
+            x = x + self.drop_path(self.gamma_1 * self.attn(self.norm1(x), qkv_weight, weights["proj"]))
             x = x + self.drop_path(self.gamma_2 * self.mlp(self.norm2(x)))
         return x
 
@@ -71,6 +71,7 @@ class ChunkedAttenVisionTransformer(ChunkedVisionTransformerBase):
         depth: int = 12,
         num_heads: int = 12,
         mlp_ratio: float = 4.0,
+        orth_dim: int | None = None,
         qkv_bias: bool = True,
         drop_rate: float = 0.0,
         attn_drop_rate: float = 0.0,
@@ -78,9 +79,11 @@ class ChunkedAttenVisionTransformer(ChunkedVisionTransformerBase):
         norm_layer: nn.Module = nn.LayerNorm,
         init_values: Optional[float] = None,
     ) -> None:
+        orth_dim = embed_dim if orth_dim is None else orth_dim
         super().__init__(
             block_cls=ChunkedBlock,
-            num_matrix=4,
+            weight_names=("q", "k", "v", "proj"),
+            orth_dim=orth_dim,
             img_size=img_size,
             patch_size=patch_size,
             in_chans=in_chans,

@@ -31,12 +31,11 @@ class ChunkedAttention(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-        qkv_w_3cc: torch.Tensor,
-        proj_w_1cc: torch.Tensor,
+        qkv_weight: torch.Tensor,
+        proj_weight: torch.Tensor,
     ) -> torch.Tensor:
         B, N, C = x.shape
-        qkv_w = qkv_w_3cc.reshape(3 * C, C)
-        qkv = F.linear(x, qkv_w, bias=self.qkv_bias)
+        qkv = F.linear(x, qkv_weight, bias=self.qkv_bias)
         qkv = qkv.reshape(B, N, 3, self.num_heads, self.head_dim)
         qkv = qkv.permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]
@@ -46,8 +45,7 @@ class ChunkedAttention(nn.Module):
         attn = self.attn_drop(attn)
 
         x = (attn @ v).transpose(1, 2).reshape(B, N, C)
-        proj_w = proj_w_1cc.squeeze(0)
-        x = F.linear(x, proj_w, bias=self.proj_bias)
+        x = F.linear(x, proj_weight, bias=self.proj_bias)
         x = self.proj_drop(x)
         return x
 
@@ -72,11 +70,7 @@ class ChunkedMlp(nn.Module):
         self.act = act_layer()
         self.drop = nn.Dropout(drop)
 
-    def forward(self, x: torch.Tensor, w1_rcc: torch.Tensor, w2_rcc: torch.Tensor) -> torch.Tensor:
-        B, N, C = x.shape
-        w1 = w1_rcc.reshape(self.r * C, C)
-        w2 = w2_rcc.permute(1, 0, 2).reshape(C, self.r * C)
-
+    def forward(self, x: torch.Tensor, w1: torch.Tensor, w2: torch.Tensor) -> torch.Tensor:
         x = F.linear(x, w1, bias=self.bias1)
         x = self.act(x)
         x = self.drop(x)
@@ -118,16 +112,14 @@ class ChunkedBlock(nn.Module):
             self.gamma_1 = None
             self.gamma_2 = None
 
-    def forward(self, x: torch.Tensor, weights: torch.Tensor) -> torch.Tensor:
-        qkv_3cc, proj_1cc, w1_rcc, w2_rcc = torch.split(
-            weights, [3, 1, self.mlp.r, self.mlp.r], dim=0
-        )
+    def forward(self, x: torch.Tensor, weights: dict[str, torch.Tensor]) -> torch.Tensor:
+        qkv_weight = torch.cat((weights["q"], weights["k"], weights["v"]), dim=0)
         if self.gamma_1 is None:
-            x = x + self.drop_path(self.attn(self.norm1(x), qkv_3cc, proj_1cc))
-            x = x + self.drop_path(self.mlp(self.norm2(x), w1_rcc, w2_rcc))
+            x = x + self.drop_path(self.attn(self.norm1(x), qkv_weight, weights["proj"]))
+            x = x + self.drop_path(self.mlp(self.norm2(x), weights["w1"], weights["w2"]))
         else:
-            x = x + self.drop_path(self.gamma_1 * self.attn(self.norm1(x), qkv_3cc, proj_1cc))
-            x = x + self.drop_path(self.gamma_2 * self.mlp(self.norm2(x), w1_rcc, w2_rcc))
+            x = x + self.drop_path(self.gamma_1 * self.attn(self.norm1(x), qkv_weight, weights["proj"]))
+            x = x + self.drop_path(self.gamma_2 * self.mlp(self.norm2(x), weights["w1"], weights["w2"]))
         return x
 
 
@@ -142,6 +134,7 @@ class ChunkedVisionTransformer(ChunkedVisionTransformerBase):
         depth: int = 12,
         num_heads: int = 12,
         mlp_ratio: float = 4.0,
+        orth_dim: int | None = None,
         qkv_bias: bool = True,
         drop_rate: float = 0.0,
         attn_drop_rate: float = 0.0,
@@ -149,10 +142,11 @@ class ChunkedVisionTransformer(ChunkedVisionTransformerBase):
         norm_layer: nn.Module = nn.LayerNorm,
         init_values: Optional[float] = None,
     ) -> None:
-        num_matrix = 4 + 2 * int(mlp_ratio)
+        orth_dim = embed_dim if orth_dim is None else orth_dim
         super().__init__(
             block_cls=ChunkedBlock,
-            num_matrix=num_matrix,
+            weight_names=("q", "k", "v", "proj", "w1", "w2"),
+            orth_dim=orth_dim,
             img_size=img_size,
             patch_size=patch_size,
             in_chans=in_chans,

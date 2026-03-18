@@ -42,16 +42,13 @@ class ChunkedBlock(nn.Module):
             self.gamma_1 = None
             self.gamma_2 = None
 
-    def forward(self, x: torch.Tensor, weights: torch.Tensor) -> torch.Tensor:
-        w1_rcc, w2_rcc = torch.split(
-            weights, [self.mlp.r, self.mlp.r], dim=0
-        )
+    def forward(self, x: torch.Tensor, weights: dict[str, torch.Tensor]) -> torch.Tensor:
         if self.gamma_1 is None:
             x = x + self.drop_path(self.attn(self.norm1(x)))
-            x = x + self.drop_path(self.mlp(self.norm2(x), w1_rcc, w2_rcc))
+            x = x + self.drop_path(self.mlp(self.norm2(x), weights["w1"], weights["w2"]))
         else:
             x = x + self.drop_path(self.gamma_1 * self.attn(self.norm1(x)))
-            x = x + self.drop_path(self.gamma_2 * self.mlp(self.norm2(x), w1_rcc, w2_rcc))
+            x = x + self.drop_path(self.gamma_2 * self.mlp(self.norm2(x), weights["w1"], weights["w2"]))
         return x
 
 
@@ -66,6 +63,7 @@ class ChunkedMlpVisionTransformer(ChunkedVisionTransformerBase):
         depth: int = 12,
         num_heads: int = 12,
         mlp_ratio: float = 4.0,
+        orth_dim: int | None = None,
         qkv_bias: bool = True,
         drop_rate: float = 0.0,
         attn_drop_rate: float = 0.0,
@@ -73,10 +71,11 @@ class ChunkedMlpVisionTransformer(ChunkedVisionTransformerBase):
         norm_layer: nn.Module = nn.LayerNorm,
         init_values: Optional[float] = None,
     ) -> None:
-        num_matrix = 2 * int(mlp_ratio)
+        orth_dim = embed_dim if orth_dim is None else orth_dim
         super().__init__(
             block_cls=ChunkedBlock,
-            num_matrix=num_matrix,
+            weight_names=("w1", "w2"),
+            orth_dim=orth_dim,
             img_size=img_size,
             patch_size=patch_size,
             in_chans=in_chans,

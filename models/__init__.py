@@ -9,6 +9,7 @@ def rout_model(**kwargs):
     if "chunk_type" in kwargs:
         kwargs.pop("chunk_type")
     if chunk_type == "none":
+        kwargs.pop("orth_dim", None)
         return VisionTransformer(**kwargs)
     elif chunk_type == "all":
         return ChunkedVisionTransformer(**kwargs)

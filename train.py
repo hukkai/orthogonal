@@ -11,7 +11,7 @@ from torch.utils.data.distributed import DistributedSampler
 
 from utils import (
     AverageMeter,
-    SOOptimizer,
+    BlockStiefelAdam,
     accuracy,
     build_imagenet_datasets,
     cosine_lr,
@@ -75,12 +75,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--save-freq", type=int, default=999)
     parser.add_argument("--eval-only", action="store_true")
 
-    parser.add_argument("--orthogonal-type", type=str, default="none")
+    parser.add_argument("--orthogonal-type", type=str, choices=["none", "all", "atten", "mlp"], default="none")
+    parser.add_argument("--orth-dim", type=int, default=None)
     parser.add_argument("--so-lr", type=float, default=0.5)
     parser.add_argument("--orth-beta1", type=float, default=0.9)
     parser.add_argument("--orth-beta2", type=float, default=0.999)
     parser.add_argument("--orth-eps", type=float, default=1e-8)
-    parser.add_argument("--no-orth-project-last", dest="orth_project_last", action="store_false")
+    parser.add_argument(
+        "--no-orth-project-last",
+        dest="orth_project_last",
+        action="store_false",
+        help="Deprecated no-op kept for script compatibility",
+    )
 
     parser.add_argument("--model-ema", action="store_true")
     parser.add_argument("--model-ema-decay", type=float, default=0.9999)
@@ -88,13 +94,16 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def resolve_orth_dim(args: argparse.Namespace) -> int | None:
+    if args.orthogonal_type == "none":
+        return None
+    return args.orth_dim if args.orth_dim is not None else args.embed_dim
+
+
 def build_model(args: argparse.Namespace) -> torch.nn.Module:
     from models import rout_model
 
-    if args.orthogonal_type not in ["none", "mlp", "atten"]:
-        chunk_type = "all"
-    else:
-        chunk_type = args.orthogonal_type
+    chunk_type = args.orthogonal_type
 
     common_kwargs = dict(
         img_size=args.img_size,
@@ -106,7 +115,7 @@ def build_model(args: argparse.Namespace) -> torch.nn.Module:
         drop_path_rate=args.drop_path
     )
 
-    model = rout_model(
+    model_kwargs = dict(
         **common_kwargs,
         embed_dim=args.embed_dim,
         depth=args.depth,
@@ -114,6 +123,10 @@ def build_model(args: argparse.Namespace) -> torch.nn.Module:
         init_values=1e-4,
         chunk_type=chunk_type,
     )
+    if chunk_type != "none":
+        model_kwargs["orth_dim"] = args.orth_dim
+
+    model = rout_model(**model_kwargs)
     return model
 
 
@@ -138,7 +151,7 @@ def train_one_epoch(
     total_steps: int,
     mixup_fn,
     criterion,
-    orth_opt: SOOptimizer | None,
+    orth_opt: BlockStiefelAdam | None,
     ema_model,
 ) -> tuple[float, float]:
     model.train()
@@ -199,9 +212,6 @@ def train_one_epoch(
                     f"LR {lr:.6f} Loss {loss_meter.avg:.4f}"
                 )
 
-    if orth_opt is not None:
-        orth_opt.finish_epoch()
-
     return loss_meter.avg, acc_meter.avg
 
 
@@ -245,6 +255,7 @@ def evaluate(
 
 def main() -> None:
     args = parse_args()
+    args.orth_dim = resolve_orth_dim(args)
     distributed, local_rank, rank, world_size = init_distributed()
     device = torch.device("cuda", local_rank) if torch.cuda.is_available() else torch.device("cpu")
 
@@ -299,12 +310,11 @@ def main() -> None:
     orth_opt = None
     if args.orthogonal_type != "none":
         module = model.module if hasattr(model, "module") else model
-        orth_opt = SOOptimizer(
+        orth_opt = BlockStiefelAdam(
             module.chunk_weights,
             lr=args.lr * args.so_lr,
             betas=(args.orth_beta1, args.orth_beta2),
             eps=args.orth_eps,
-            project_last=args.orth_project_last,
         )
 
     ema_model = None
@@ -340,8 +350,6 @@ def main() -> None:
         optimizer.load_state_dict(checkpoint["optimizer"])
         start_epoch = checkpoint.get("epoch", 0) + 1
         best_acc1 = checkpoint.get("best_acc1", 0.0)
-        if orth_opt is not None and "orth" in checkpoint:
-            orth_opt.load_state_dict(checkpoint["orth"])
         if ema_model is not None and "ema" in checkpoint and checkpoint["ema"] is not None:
             ema_model.load_state_dict(checkpoint["ema"])
         if is_main_process():
@@ -401,20 +409,21 @@ def main() -> None:
             )
 
             best_acc1 = max(best_acc1, val_acc1)
-            if epoch % args.save_freq == 0 or epoch == args.epochs - 1:
-                save_checkpoint(
-                    {
-                        "model": model.state_dict(),
-                        "optimizer": optimizer.state_dict(),
-                        "epoch": epoch,
-                        "best_acc1": best_acc1,
-                        "orth": orth_opt.state_dict() if orth_opt is not None else None,
-                        "ema": ema_model.state_dict() if ema_model is not None else None,
-                        "args": vars(args),
-                    },
-                    args.output,
-                    filename=f"checkpoint_{epoch:03d}.pth",
-                )
+        should_save = epoch % args.save_freq == 0 or epoch == args.epochs - 1
+
+        if is_main_process() and should_save:
+            save_checkpoint(
+                {
+                    "model": model.state_dict(),
+                    "optimizer": optimizer.state_dict(),
+                    "epoch": epoch,
+                    "best_acc1": best_acc1,
+                    "ema": ema_model.state_dict() if ema_model is not None else None,
+                    "args": vars(args),
+                },
+                args.output,
+                filename=f"checkpoint_{epoch:03d}.pth",
+            )
 
     if distributed:
         dist.destroy_process_group()

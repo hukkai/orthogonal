@@ -1,4 +1,4 @@
-import math
+from dataclasses import dataclass
 from typing import Optional, Type
 
 import torch
@@ -9,12 +9,25 @@ from .layers import trunc_normal_
 from .vit import PatchEmbed
 
 
+@dataclass(frozen=True)
+class WeightSpec:
+    name: str
+    num_blocks: int
+
+
+def blocks_to_matrix(blocks: torch.Tensor) -> torch.Tensor:
+    if blocks.ndim != 3:
+        raise ValueError("blocks must have shape (num_blocks, dim, orth_dim)")
+    return blocks.permute(1, 0, 2).reshape(blocks.shape[1], blocks.shape[0] * blocks.shape[2])
+
+
 class ChunkedVisionTransformerBase(nn.Module):
     def __init__(
         self,
         *,
         block_cls: Type[nn.Module],
-        num_matrix: int,
+        weight_names: tuple[str, ...],
+        orth_dim: int,
         img_size: int = 224,
         patch_size: int = 16,
         in_chans: int = 3,
@@ -33,6 +46,10 @@ class ChunkedVisionTransformerBase(nn.Module):
         super().__init__()
         self.num_classes = num_classes
         self.embed_dim = embed_dim
+        self.orth_dim = orth_dim
+
+        if orth_dim <= 0 or embed_dim % orth_dim != 0:
+            raise ValueError("orth_dim must be a positive divisor of embed_dim")
 
         self.patch_embed = PatchEmbed(
             img_size=img_size,
@@ -66,13 +83,11 @@ class ChunkedVisionTransformerBase(nn.Module):
         self.norm = norm_layer(embed_dim)
         self.head = nn.Linear(embed_dim, num_classes) if num_classes > 0 else nn.Identity()
 
-        self.num_matrix = num_matrix
-        total_chunks = depth * self.num_matrix
+        self.weight_specs = self._build_weight_specs(weight_names, embed_dim, orth_dim, mlp_ratio)
+        self.blocks_per_layer = sum(spec.num_blocks for spec in self.weight_specs)
+        total_chunks = depth * self.blocks_per_layer
         self.chunk_weights = nn.Parameter(
-            torch.randn(total_chunks, embed_dim, embed_dim) / math.sqrt(embed_dim)
-        )
-        self.chunk_norm = nn.Parameter(
-            torch.ones(total_chunks, 1, embed_dim) / math.sqrt(embed_dim)
+            torch.randn(total_chunks, embed_dim, orth_dim)
         )
 
         self.apply(self._init_weights)
@@ -81,16 +96,34 @@ class ChunkedVisionTransformerBase(nn.Module):
 
         with torch.no_grad():
             w = self.chunk_weights.data.to(dtype=torch.float64)
-            q, r = torch.linalg.qr(w)
-            diag = torch.diagonal(r, dim1=-2, dim2=-1)
-            sign = torch.sign(diag)
-            sign = torch.where(sign == 0, torch.ones_like(sign), sign)
-            q = q * sign.unsqueeze(-2)
-            sign_det, _ = torch.linalg.slogdet(w)
-            mask = sign_det < 0
-            if mask.any():
-                q[mask, :, -1] *= -1
+            q, _ = torch.linalg.qr(w, mode="reduced")
             self.chunk_weights.data.copy_(q.to(dtype=self.chunk_weights.dtype))
+
+    @staticmethod
+    def _build_weight_specs(
+        weight_names: tuple[str, ...],
+        embed_dim: int,
+        orth_dim: int,
+        mlp_ratio: float,
+    ) -> tuple[WeightSpec, ...]:
+        attn_blocks = embed_dim // orth_dim
+        specs: list[WeightSpec] = []
+        mlp_expansion = None
+
+        for name in weight_names:
+            if name in {"q", "k", "v", "proj"}:
+                specs.append(WeightSpec(name=name, num_blocks=attn_blocks))
+                continue
+            if name in {"w1", "w2"}:
+                if mlp_expansion is None:
+                    mlp_expansion = int(mlp_ratio)
+                    if mlp_expansion != mlp_ratio:
+                        raise ValueError("mlp_ratio must be an integer for chunked MLP")
+                specs.append(WeightSpec(name=name, num_blocks=(mlp_expansion * embed_dim) // orth_dim))
+                continue
+            raise ValueError(f"Unsupported weight name {name}")
+
+        return tuple(specs)
 
     def _init_weights(self, m: nn.Module) -> None:
         if isinstance(m, nn.Linear):
@@ -119,8 +152,8 @@ class ChunkedVisionTransformerBase(nn.Module):
     def forward_features(self, x: torch.Tensor) -> torch.Tensor:
         B, _, H, W = x.shape
 
-        block_w = (self.chunk_weights * self.chunk_norm * self.embed_dim ** .5).reshape(
-            len(self.blocks), self.num_matrix, self.embed_dim, self.embed_dim
+        layer_blocks = self.chunk_weights.reshape(
+            len(self.blocks), self.blocks_per_layer, self.embed_dim, self.orth_dim
         )
 
         x = self.patch_embed(x)
@@ -132,10 +165,23 @@ class ChunkedVisionTransformerBase(nn.Module):
         x = x + pos_embed
         x = self.pos_drop(x)
 
-        for blk, w in zip(self.blocks, block_w):
-            x = blk(x, w)
+        for blk, blocks in zip(self.blocks, layer_blocks):
+            x = blk(x, self.reconstruct_layer_weights(blocks))
         x = self.norm(x)
         return x[:, 0]
+
+    def reconstruct_layer_weights(self, blocks: torch.Tensor) -> dict[str, torch.Tensor]:
+        weights: dict[str, torch.Tensor] = {}
+        start = 0
+        for spec in self.weight_specs:
+            end = start + spec.num_blocks
+            matrix = blocks_to_matrix(blocks[start:end]).contiguous()
+            if spec.name == "w1":
+                weights[spec.name] = matrix.transpose(0, 1).contiguous()
+            else:
+                weights[spec.name] = matrix
+            start = end
+        return weights
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.forward_features(x)

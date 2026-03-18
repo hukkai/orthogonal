@@ -2,8 +2,14 @@
 export MASTER_PORT=$((12000 + $RANDOM % 20000))
 
 ORTH_TYPE=$1
+ORTH_DIM=$2
 # DATA_ROOT="/project/flame/kaihu/imagenet"
 DATA_ROOT="/opt/dlami/nvme/imagenet"
+
+ORTH_ARGS=()
+if [ -n "$ORTH_DIM" ]; then
+    ORTH_ARGS+=(--orth-dim "$ORTH_DIM")
+fi
 
 torchrun \
     --nproc_per_node 8 \
@@ -14,4 +20,5 @@ torchrun \
     --depth 24 \
     --num-heads 16 \
     --model-ema \
-    --orthogonal-type $ORTH_TYPE
+    --orthogonal-type $ORTH_TYPE \
+    "${ORTH_ARGS[@]}"
