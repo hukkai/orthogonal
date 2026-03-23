@@ -15,5 +15,5 @@ torchrun \
     --depth 24 \
     --num-heads 16 \
     --model-ema \
-    --orthogonal-type $ORTH_TYPE
+    --orthogonal-type $ORTH_TYPE \
     --sub-matrix $SUB_MATRIX
