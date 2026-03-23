@@ -39,7 +39,7 @@ def fast_exp(x: torch.Tensor) -> torch.Tensor:
 
 
 @torch.no_grad()
-def polar_row_orthogonal(
+def polar(
     a: torch.Tensor,
     tolerance: float = 1e-5,
     eps: float = 1e-10,
