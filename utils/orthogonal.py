@@ -13,6 +13,7 @@ class SOOptimizer:
         lr: float,
         betas: tuple[float, float] = (0.9, 0.999),
         eps: float = 1e-8,
+        sub_matrix: int = 8,
         project_last: bool = True,
     ) -> None:
         self.param = param
@@ -39,6 +40,14 @@ class SOOptimizer:
         self.v = torch.zeros_like(self.m)
         self.buffer = torch.zeros_like(param.data)
         self.step_count = torch.tensor(0.0, device=self.m.device)
+
+        self.dim = self.m.shape[1]
+
+        if self.dim % sub_matrix != 0:
+            raise ValueError(
+                f"sub_matrix {sub_matrix} cannot be devided by matrix dim {self.dim}")
+
+        self.orth_dim = self.dim // sub_matrix
 
     def state_dict(self) -> dict:
         return {
@@ -70,8 +79,6 @@ class SOOptimizer:
         x = self.param.data[self.local_slice]
         grad = self.param.grad[self.local_slice]
 
-        grad = so_proj(x, grad)
-
         self.m += (grad - self.m) * (1.0 - self.beta1)
         self.v += (grad.pow(2) - self.v) * (1.0 - self.beta2)
 
@@ -79,11 +86,17 @@ class SOOptimizer:
         v_hat = self.v / (1.0 - self.beta2**self.step_count)
 
         update = -m_hat / (v_hat.sqrt() + self.eps) * lr
-        update = fast_exp(update.double())
-        new_x = (x.double() @ update).to(x.dtype)
+
+        x = x.reshape(-1, self.orth_dim, self.dim)
+        update = update.reshape_as(x.shape)
+        update = so_proj(x, update)
+        update = fast_exp(update)
+        new_x = x @ update
 
         if is_last and self.project_last:
             new_x = polar(new_x)
+
+        new_x = new_x.reshape_as(self.m)
 
         self.buffer.zero_()
         self.buffer[self.local_slice] = new_x
@@ -93,5 +106,4 @@ class SOOptimizer:
         self.param.grad = None
 
     def finish_epoch(self) -> None:
-        self.m = 0.5 * (self.m - self.m.transpose(-1, -2))
-        self.v = 0.5 * (self.v + self.v.transpose(-1, -2))
+        return

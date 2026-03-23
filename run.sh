@@ -2,6 +2,7 @@
 export MASTER_PORT=$((12000 + $RANDOM % 20000))
 
 ORTH_TYPE=$1
+SUB_MATRIX=$2
 # DATA_ROOT="/project/flame/kaihu/imagenet"
 DATA_ROOT="/opt/dlami/nvme/imagenet"
 
@@ -15,3 +16,4 @@ torchrun \
     --num-heads 16 \
     --model-ema \
     --orthogonal-type $ORTH_TYPE
+    --sub-matrix $SUB_MATRIX

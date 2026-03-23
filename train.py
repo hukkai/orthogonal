@@ -76,6 +76,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--eval-only", action="store_true")
 
     parser.add_argument("--orthogonal-type", type=str, default="none")
+    parser.add_argument("--sub-matrix", type=int, default=1)
     parser.add_argument("--so-lr", type=float, default=0.5)
     parser.add_argument("--orth-beta1", type=float, default=0.9)
     parser.add_argument("--orth-beta2", type=float, default=0.999)
@@ -178,6 +179,8 @@ def train_one_epoch(
 
         optimizer.step()
         optimizer.zero_grad(set_to_none=True)
+        model.module.chunk_norm1.data.clamp_(-5.0, 5.0)
+        model.module.chunk_norm2.data.clamp_(-5.0, 5.0)
 
         if ema_model is not None:
             ema_model.update(model.module if hasattr(model, "module") else model)
@@ -304,6 +307,7 @@ def main() -> None:
             lr=args.lr * args.so_lr,
             betas=(args.orth_beta1, args.orth_beta2),
             eps=args.orth_eps,
+            sub_matrix=args.sub_matrix,
             project_last=args.orth_project_last,
         )
 

@@ -71,9 +71,9 @@ class ChunkedVisionTransformerBase(nn.Module):
         self.chunk_weights = nn.Parameter(
             torch.randn(total_chunks, embed_dim, embed_dim) / math.sqrt(embed_dim)
         )
-        self.chunk_norm = nn.Parameter(
-            torch.ones(total_chunks, 1, embed_dim) / math.sqrt(embed_dim)
-        )
+
+        self.chunk_norm1 = nn.Parameter(torch.zeros(total_chunks, embed_dim, 1))
+        self.chunk_norm2 = nn.Parameter(torch.zeros(total_chunks, 1, embed_dim))
 
         self.apply(self._init_weights)
         trunc_normal_(self.pos_embed, std=0.02)
@@ -119,7 +119,8 @@ class ChunkedVisionTransformerBase(nn.Module):
     def forward_features(self, x: torch.Tensor) -> torch.Tensor:
         B, _, H, W = x.shape
 
-        block_w = (self.chunk_weights * self.chunk_norm * self.embed_dim ** .5).reshape(
+        chunk_norm = self.chunk_norm1.exp() + self.chunk_norm2.exp() - 1
+        block_w = (self.chunk_weights * chunk_norm).reshape(
             len(self.blocks), self.num_matrix, self.embed_dim, self.embed_dim
         )
 
