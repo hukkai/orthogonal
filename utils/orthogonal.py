@@ -45,7 +45,7 @@ class SOOptimizer:
 
         if self.dim % sub_matrix != 0:
             raise ValueError(
-                f"sub_matrix {sub_matrix} cannot be devided by matrix dim {self.dim}")
+                f"Matrix dim {self.dim} must be divisible by sub_matrix {sub_matrix}")
 
         self.orth_dim = self.dim // sub_matrix
 
@@ -88,7 +88,7 @@ class SOOptimizer:
         update = -m_hat / (v_hat.sqrt() + self.eps) * lr
 
         x = x.reshape(-1, self.orth_dim, self.dim)
-        update = update.reshape_as(x.shape)
+        update = update.reshape_as(x)
         new_x = fast_exp_action(x, update)
 
         if is_last and self.project_last:

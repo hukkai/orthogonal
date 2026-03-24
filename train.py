@@ -179,8 +179,11 @@ def train_one_epoch(
 
         optimizer.step()
         optimizer.zero_grad(set_to_none=True)
-        model.module.chunk_norm1.data.clamp_(-5.0, 5.0)
-        model.module.chunk_norm2.data.clamp_(-5.0, 5.0)
+
+        module = model.module if hasattr(model, "module") else model
+        if hasattr(module, "chunk_norm1"):
+            module.chunk_norm1.data.clamp_(-5.0, 5.0)
+            module.chunk_norm2.data.clamp_(-5.0, 5.0)
 
         if ema_model is not None:
             ema_model.update(model.module if hasattr(model, "module") else model)
