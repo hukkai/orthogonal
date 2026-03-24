@@ -38,6 +38,75 @@ def fast_exp(x: torch.Tensor) -> torch.Tensor:
     return torch.matrix_exp(x)
 
 
+def _screen_dtype(x: torch.Tensor) -> torch.dtype:
+    if x.dtype in (torch.float16, torch.bfloat16):
+        return torch.float32
+    return x.dtype
+
+
+@torch.no_grad()
+def so_proj_fro_norm(x: torch.Tensor, grad: torch.Tensor) -> torch.Tensor:
+    """
+    Compute ||asym(X^T G)||_F without materializing the m x m matrix.
+    """
+    screen_dtype = _screen_dtype(x)
+    x_screen = x if x.dtype == screen_dtype else x.to(screen_dtype)
+    grad_screen = grad if grad.dtype == screen_dtype else grad.to(screen_dtype)
+    gx_t = grad_screen @ x_screen.mT
+    grad_norm_sq = (grad_screen * grad_screen).sum(dim=(-2, -1))
+    trace_sq = torch.einsum("...ij,...ji->...", gx_t, gx_t)
+    return (0.5 * (grad_norm_sq - trace_sq)).clamp_min_(0).sqrt_()
+
+
+@torch.no_grad()
+def taylor_so_action(x: torch.Tensor, grad: torch.Tensor, order: int) -> torch.Tensor:
+    """
+    Compute X * sum_{k=0}^order A^k / k! for A = asym(X^T G) without forming A.
+    """
+    if x.shape != grad.shape:
+        raise ValueError(f"x and grad must share shape, got {tuple(x.shape)} and {tuple(grad.shape)}")
+    if order < 0:
+        raise ValueError(f"order must be non-negative, got {order}")
+
+    *batch_shape, n, _ = x.shape
+    s = x @ grad.mT
+    m = s.mT
+    h = grad @ grad.mT
+
+    eye = torch.eye(n, device=x.device, dtype=x.dtype).expand(*batch_shape, n, n)
+    coeff_x = eye.clone()
+    coeff_g = torch.zeros_like(s)
+    cur_x = eye
+    cur_g = torch.zeros_like(s)
+    inv_factorial = 1.0
+
+    for k in range(1, order + 1):
+        next_x = -0.5 * (cur_x @ s + cur_g @ h)
+        next_g = 0.5 * (cur_x + cur_g @ m)
+        inv_factorial /= k
+        coeff_x = coeff_x + inv_factorial * next_x
+        coeff_g = coeff_g + inv_factorial * next_g
+        cur_x, cur_g = next_x, next_g
+
+    return coeff_x @ x + coeff_g @ grad
+
+
+@torch.no_grad()
+def fast_exp_action(x: torch.Tensor, grad: torch.Tensor) -> torch.Tensor:
+    """
+    Compute X exp(asym(X^T G)), fusing the Taylor expansion with the left action by X.
+    """
+    norm = so_proj_fro_norm(x, grad).max()
+    if norm < 0.05:
+        return taylor_so_action(x, grad, order=2)
+    if norm < 0.25:
+        return taylor_so_action(x, grad, order=3)
+    if norm < 1:
+        return taylor_so_action(x, grad, order=4)
+
+    return x @ torch.matrix_exp(so_proj(x, grad))
+
+
 @torch.no_grad()
 def polar(
     a: torch.Tensor,
