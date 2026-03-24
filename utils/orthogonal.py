@@ -3,7 +3,7 @@ from __future__ import annotations
 import torch
 import torch.distributed as dist
 
-from .ops import fast_exp, polar, so_proj
+from .ops import fast_exp_action, polar
 
 
 class SOOptimizer:
@@ -89,9 +89,7 @@ class SOOptimizer:
 
         x = x.reshape(-1, self.orth_dim, self.dim)
         update = update.reshape_as(x.shape)
-        update = so_proj(x, update)
-        update = fast_exp(update)
-        new_x = x @ update
+        new_x = fast_exp_action(x, update)
 
         if is_last and self.project_last:
             new_x = polar(new_x)
