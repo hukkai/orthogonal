@@ -45,7 +45,7 @@ class SOOptimizer:
 
         if self.dim % sub_matrix != 0:
             raise ValueError(
-                f"sub_matrix {sub_matrix} cannot be devided by matrix dim {self.dim}")
+                f"Matrix dim {self.dim} must be divisible by sub_matrix {sub_matrix}")
 
         self.orth_dim = self.dim // sub_matrix
 
