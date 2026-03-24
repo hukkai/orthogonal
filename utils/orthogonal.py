@@ -88,7 +88,7 @@ class SOOptimizer:
         update = -m_hat / (v_hat.sqrt() + self.eps) * lr
 
         x = x.reshape(-1, self.orth_dim, self.dim)
-        update = update.reshape_as(x.shape)
+        update = update.reshape_as(x)
         update = so_proj(x, update)
         update = fast_exp(update)
         new_x = x @ update
