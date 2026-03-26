@@ -3,7 +3,11 @@ from __future__ import annotations
 import torch
 import torch.distributed as dist
 
-from .ops import fast_exp_action, polar
+from .ops import fast_exp_action, polar, fast_exp
+
+
+def asym(x):
+    return .5 * (x - x.mT)
 
 
 class SOOptimizer:
@@ -89,7 +93,9 @@ class SOOptimizer:
 
         x = x.reshape(-1, self.orth_dim, self.dim)
         update = update.reshape_as(x)
-        new_x = fast_exp_action(x, update)
+        # new_x = fast_exp_action(x, update)
+        A = asym(x.mT @ update) * 2 - x.mT @ asym(update @ x.mT) @ x
+        new_x = x @ fast_exp(A)
 
         if is_last and self.project_last:
             new_x = polar(new_x)
