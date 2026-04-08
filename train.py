@@ -76,7 +76,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--eval-only", action="store_true")
 
     parser.add_argument("--orthogonal-type", type=str, default="none")
-    parser.add_argument("--so-lr", type=float, default=0.5)
+    parser.add_argument("--so-lr", type=float, default=0.5, help="Default SO LR scale")
+    parser.add_argument(
+        "--so-lr-atten",
+        "--so-lr-attn",
+        dest="so_lr_atten",
+        type=float,
+        default=None,
+        help="SO LR scale for orthogonal attention weights (falls back to --so-lr)",
+    )
+    parser.add_argument(
+        "--so-lr-mlp",
+        type=float,
+        default=None,
+        help="SO LR scale for orthogonal MLP weights (falls back to --so-lr)",
+    )
     parser.add_argument("--orth-beta1", type=float, default=0.9)
     parser.add_argument("--orth-beta2", type=float, default=0.999)
     parser.add_argument("--orth-eps", type=float, default=1e-8)
@@ -124,6 +138,37 @@ def create_optimizer(args: argparse.Namespace, model: torch.nn.Module) -> torch.
     return optimizer
 
 
+def build_so_lr_factors(
+    args: argparse.Namespace,
+    model: torch.nn.Module,
+) -> float | torch.Tensor:
+    so_lr_atten = args.so_lr if args.so_lr_atten is None else args.so_lr_atten
+    so_lr_mlp = args.so_lr if args.so_lr_mlp is None else args.so_lr_mlp
+
+    if args.orthogonal_type == "atten":
+        return so_lr_atten
+    if args.orthogonal_type == "mlp":
+        return so_lr_mlp
+    if args.orthogonal_type == "none":
+        return args.so_lr
+
+    num_matrix = model.num_matrix
+    if num_matrix < 4:
+        raise ValueError(f"Unexpected num_matrix={num_matrix} for mixed orthogonal training")
+
+    template = torch.full(
+        (num_matrix,),
+        fill_value=so_lr_mlp,
+        device=model.chunk_weights.device,
+        dtype=model.chunk_weights.dtype,
+    )
+    template[:4] = so_lr_atten
+    factors = template.repeat(len(model.blocks))
+    if factors.numel() != model.chunk_weights.shape[0]:
+        raise ValueError("Failed to build SO LR factors: shape mismatch with chunk_weights")
+    return factors
+
+
 def train_one_epoch(
     args: argparse.Namespace,
     model: torch.nn.Module,
@@ -139,6 +184,7 @@ def train_one_epoch(
     mixup_fn,
     criterion,
     orth_opt: SOOptimizer | None,
+    orth_lr_factors: float | torch.Tensor | None,
     ema_model,
 ) -> tuple[float, float]:
     model.train()
@@ -174,7 +220,11 @@ def train_one_epoch(
 
         is_last = i == len(loader) - 1
         if orth_opt is not None:
-            orth_opt.step(lr=lr * args.so_lr, is_last=is_last)
+            if orth_lr_factors is None:
+                orth_lr = lr * args.so_lr
+            else:
+                orth_lr = lr * orth_lr_factors
+            orth_opt.step(lr=orth_lr, is_last=is_last)
 
         optimizer.step()
         optimizer.zero_grad(set_to_none=True)
@@ -297,6 +347,7 @@ def main() -> None:
     warmup_steps = steps_per_epoch * args.warmup_epochs
 
     orth_opt = None
+    orth_lr_factors = None
     if args.orthogonal_type != "none":
         module = model.module if hasattr(model, "module") else model
         orth_opt = SOOptimizer(
@@ -306,6 +357,7 @@ def main() -> None:
             eps=args.orth_eps,
             project_last=args.orth_project_last,
         )
+        orth_lr_factors = build_so_lr_factors(args, module)
 
     ema_model = None
     if args.model_ema:
@@ -377,6 +429,7 @@ def main() -> None:
             mixup_fn,
             criterion,
             orth_opt,
+            orth_lr_factors,
             ema_model,
         )
         base_loss, base_acc1, base_acc5 = evaluate(model, val_loader, device, val_criterion)
